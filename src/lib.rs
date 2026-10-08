@@ -4,7 +4,7 @@
 //! It demonstrates the full authentication and payment flow:
 //!
 //! 1. **BRC-31 Mutual Authentication** — Client and server exchange identity keys
-//!    and sign every request/response. Handled by the `bsv-auth-cloudflare` middleware.
+//!    and sign every request/response. Handled by the `bsv-middleware-cloudflare` middleware.
 //!
 //! 2. **BRC-29 Micropayment** — Paid endpoints return HTTP 402 with a payment request.
 //!    The client creates a BSV transaction and retries with the payment in a header.
@@ -27,7 +27,7 @@
 //!    calculate dynamic pricing like banana-agent does
 
 #[allow(unused_imports)]
-use bsv_auth_cloudflare::{
+use bsv_middleware_cloudflare::{
     add_cors_headers,
     client::WorkerStorageClient,
     init_panic_hook,
@@ -192,8 +192,8 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 // The client's identity key is available in auth_context.identity_key.
 
 fn handle_free(
-    auth_context: &bsv_auth_cloudflare::types::AuthContext,
-    session: &bsv_auth_cloudflare::middleware::AuthSession,
+    auth_context: &bsv_middleware_cloudflare::types::AuthContext,
+    session: &bsv_middleware_cloudflare::middleware::AuthSession,
 ) -> Result<Response> {
     let body = serde_json::json!({
         "message": "Hello! You are authenticated.",
@@ -226,8 +226,8 @@ fn handle_free(
 
 async fn handle_paid(
     req: &Request,
-    auth_context: &bsv_auth_cloudflare::types::AuthContext,
-    session: &bsv_auth_cloudflare::middleware::AuthSession,
+    auth_context: &bsv_middleware_cloudflare::types::AuthContext,
+    session: &bsv_middleware_cloudflare::middleware::AuthSession,
     server_key: &str,
     request_body: &[u8],
     env: &Env,

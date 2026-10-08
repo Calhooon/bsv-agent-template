@@ -50,7 +50,9 @@ npm run dev
 # Server is live at http://localhost:8787
 ```
 
-> **Note:** This project depends on `bsv-auth-cloudflare` and `bsv-sdk`, which are private crates. Contact [@Calgooon](https://github.com/Calgooon) for access.
+> **Note:** Dependencies are public crates: [`bsv-middleware-cloudflare`](https://crates.io/crates/bsv-middleware-cloudflare) and [`bsv-rs`](https://crates.io/crates/bsv-rs) (imported as `bsv_sdk`). Until `bsv-middleware-cloudflare` 0.3.6 is on crates.io, `Cargo.toml` points at a local checkout (the `# TEMP` line); it becomes `version = "0.3.6"` once published.
+>
+> **Set `CHAINTRACKS_URL`** in `wrangler.toml` `[vars]` to your own block-header (ChainTracks) service before you deploy. The shipped value, `https://chaintracks.invalid`, is a placeholder.
 
 ---
 
@@ -140,8 +142,8 @@ const PRICE_PREMIUM: u64 = 1000;
 
 ```rust
 fn handle_my_endpoint(
-    auth_context: &bsv_auth_cloudflare::types::AuthContext,
-    session: &bsv_auth_cloudflare::middleware::AuthSession,
+    auth_context: &bsv_middleware_cloudflare::types::AuthContext,
+    session: &bsv_middleware_cloudflare::middleware::AuthSession,
 ) -> Result<Response> {
     // auth_context.identity_key has the caller's public key
     let body = serde_json::json!({
@@ -211,9 +213,9 @@ bsv-agent-template/
 
 | Crate | Source | Purpose |
 |:------|:------:|:--------|
-| `bsv-auth-cloudflare` | Private | BRC-31 auth middleware, CORS, response signing, storage client |
-| `bsv-sdk` | Private | Key derivation, nonce creation/verification, transaction parsing |
-| `worker` | crates.io | Cloudflare Workers runtime |
+| `bsv-middleware-cloudflare` | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-sdk` (package `bsv-rs` 0.3) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
+| `worker` 0.8 | crates.io | Cloudflare Workers runtime |
 | `serde` / `serde_json` | crates.io | JSON serialization |
 
 ---
@@ -230,7 +232,9 @@ npx wrangler kv namespace create AUTH_SESSIONS
 # 3. Set the server private key as a secret
 npx wrangler secret put SERVER_PRIVATE_KEY
 
-# 4. Deploy
+# 4. Set CHAINTRACKS_URL in wrangler.toml [vars] to your own header service
+
+# 5. Deploy
 npx wrangler deploy
 ```
 
@@ -253,7 +257,7 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 ## Related Projects
 
 - **[x402-client](https://github.com/Calgooon/x402)** — Python client library for BRC-31 auth + BRC-29 payment. Use this to test your agent.
-- **[bsv-auth-cloudflare](https://github.com/Calgooon)** — The Rust middleware that powers authentication and payment verification.
+- **[bsv-middleware-cloudflare](https://crates.io/crates/bsv-middleware-cloudflare)** — The Rust middleware that powers authentication and payment verification.
 - **[x402agency.com](https://x402agency.com)** — Live agents built from this template: image generation, video generation, speech-to-text, X research.
 
 ---

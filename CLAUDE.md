@@ -8,8 +8,8 @@ Rust Cloudflare Worker template with BRC-31 mutual authentication and BRC-29 mic
 bsv-agent-template/
 ├── src/
 │   └── lib.rs              # All worker logic: routing, auth, payment, handlers
-├── Cargo.toml              # Rust deps (bsv-auth-cloudflare + bsv-sdk are PRIVATE)
-├── wrangler.toml            # CF Worker config (placeholder account_id and KV id)
+├── Cargo.toml              # Rust deps (bsv-middleware-cloudflare, bsv-rs, worker 0.8)
+├── wrangler.toml            # CF Worker config (placeholder account_id, KV id, CHAINTRACKS_URL)
 ├── package.json             # npm run dev / npm run build
 ├── .dev.vars.example        # Template for SERVER_PRIVATE_KEY
 ├── .dev.vars                # Actual secrets (gitignored)
@@ -35,12 +35,10 @@ npx wrangler deploy
 
 ## Dependencies
 
-- **bsv-auth-cloudflare** (private, `path = "../rust-middleware/bsv-auth-cloudflare"`) — BRC-31 auth middleware: handshake, session management, request/response signing, CORS, payment header constants, `WorkerStorageClient` for internalizing payments via `storage.babbage.systems`.
-- **bsv-sdk** (private, `path = "../rust-sdk"`) — BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `Transaction::from_beef`.
-- **worker** (crates.io) — Cloudflare Workers Rust runtime.
+- **bsv-middleware-cloudflare** (crates.io, `features = ["refund", "d1-claims"]`; TEMP path dep `../wt-middleware-lane/.claude/worktrees/mw-port` until 0.3.6 publishes, M5 #36) — BRC-31 auth middleware: handshake, session management, request/response signing, CORS, payment header constants, `WorkerStorageClient` for internalizing payments via `storage.babbage.systems`.
+- **bsv-sdk** (crates.io `bsv-rs` 0.3, `package = "bsv-rs"`) — BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `Transaction::from_beef`.
+- **worker** 0.8 (crates.io) — Cloudflare Workers Rust runtime. Build with the global `worker-build` 0.8.x.
 - **serde** / **serde_json** (crates.io) — JSON serialization.
-
-Contact [@Calgooon](https://github.com/Calgooon) for access to private crates.
 
 ## Architecture
 
@@ -105,10 +103,13 @@ curl http://localhost:8787/
 - **SERVER_PRIVATE_KEY** — 64-char hex private key. Set in `.dev.vars` (local) or `npx wrangler secret put` (production).
 - **AUTH_SESSIONS** — KV namespace binding for session storage. Create with `npx wrangler kv namespace create AUTH_SESSIONS`.
 - **account_id** — Your Cloudflare account ID in `wrangler.toml`.
+- **CHAINTRACKS_URL** — `[vars]` in `wrangler.toml`; your block-header (ChainTracks) service. Placeholder `https://chaintracks.invalid` until you set it.
+- **CHAINTRACKS_URL** — `[vars]` in `wrangler.toml`; your block-header (ChainTracks) service. Placeholder `https://chaintracks.invalid` until you set it.
 
 ## Critical Notes
 
-- `bsv-auth-cloudflare` and `bsv-sdk` are private path dependencies. The repo won't compile without them cloned as siblings.
+- Until `bsv-middleware-cloudflare` 0.3.6 is on crates.io, `Cargo.toml` path-depends on `../wt-middleware-lane/.claude/worktrees/mw-port` (the `# TEMP` line); the M5 #36 sweep flips it to `version = "0.3.6"`.
+- **CHAINTRACKS_URL** (`wrangler.toml` `[vars]`) ships as the placeholder `https://chaintracks.invalid`; adopters set their own header service. Under the `.invalid` host the middleware's `verify_brc29_payment` skips SPV, so any handler that calls it must read the var and pass `Some(url)`.
 - Payment internalization goes through `storage.babbage.systems` (mainnet). Test payments spend real sats.
 - The nonce originator (`ORIGINATOR`) must match between `create_nonce` and `verify_nonce` — changing it after issuing 402s will break in-flight payments.
 - `.dev.vars` is gitignored. Only `.dev.vars.example` is committed. Never commit real keys.
