@@ -37,7 +37,7 @@ Fork it. Replace the hello-world logic with your service. Deploy. You now have a
 
 ```bash
 # 1. Clone
-git clone https://github.com/Calgooon/bsv-agent-template.git
+git clone https://github.com/Calhooon/bsv-agent-template.git
 cd bsv-agent-template
 npm install
 
