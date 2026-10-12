@@ -233,6 +233,35 @@ fn chaintracks_url_of(env: &Env) -> std::result::Result<String, PaymentVerifyErr
     header_service_url(env.var("CHAINTRACKS_URL").ok().map(|v| v.to_string()))
 }
 
+fn payment_challenge_headers(derivation_prefix: &str) -> Vec<(String, String)> {
+    vec![
+        (payment_headers::VERSION.to_string(), "1.0".to_string()),
+        (
+            payment_headers::SATOSHIS_REQUIRED.to_string(),
+            PAID_ENDPOINT_PRICE.to_string(),
+        ),
+        (
+            payment_headers::DERIVATION_PREFIX.to_string(),
+            derivation_prefix.to_string(),
+        ),
+        (
+            payment_headers::TRANSPORTS.to_string(),
+            "header,multipart".to_string(),
+        ),
+    ]
+}
+
+// Keep configuration refusals on the same signing path as verifier refusals.
+fn checked_work_limit<T>(
+    limit: std::result::Result<Option<u64>, PaymentVerifyError>,
+    sign: impl FnOnce(&serde_json::Value, u16) -> T,
+) -> std::result::Result<Option<u64>, T> {
+    limit.map_err(|err| {
+        let (status, body) = payment_verify_error_response(&err);
+        sign(&body, status)
+    })
+}
+
 /// The paid branch's verification step: resolve the header service, then run
 /// the crate verifier against it as `Some(url)`. Without a usable header
 /// service the verifier is never called and the payment is refused with
@@ -246,7 +275,7 @@ async fn verify_paid_output<S: bsv_sdk::transaction::beef_stream::AsyncByteSourc
     derivation_suffix: &str,
     source: &mut S,
     required_satoshis: u64,
-    work_limit: std::result::Result<Option<u64>, PaymentVerifyError>,
+    work_limit: Option<u64>,
 ) -> std::result::Result<bsv_middleware_cloudflare::VerifiedPayment, PaymentVerifyError> {
     let url = header_service?;
     bsv_middleware_cloudflare::verify_brc29_payment_source(
@@ -258,7 +287,7 @@ async fn verify_paid_output<S: bsv_sdk::transaction::beef_stream::AsyncByteSourc
         0,
         required_satoshis,
         Some(url.as_str()),
-        work_limit?,
+        work_limit,
     )
     .await
 }
@@ -492,17 +521,7 @@ async fn handle_paid(
             //   - VERSION: protocol version
             //   - SATOSHIS_REQUIRED: how much to pay
             //   - DERIVATION_PREFIX: nonce for BRC-42 key derivation
-            let payment_hdrs = vec![
-                (payment_headers::VERSION.to_string(), "1.0".to_string()),
-                (
-                    payment_headers::SATOSHIS_REQUIRED.to_string(),
-                    PAID_ENDPOINT_PRICE.to_string(),
-                ),
-                (
-                    payment_headers::DERIVATION_PREFIX.to_string(),
-                    derivation_prefix,
-                ),
-            ];
+            let payment_hdrs = payment_challenge_headers(&derivation_prefix);
 
             sign_json_response(&body, 402, &payment_hdrs, session)
                 .map_err(|e| Error::from(e.to_string()))
@@ -541,13 +560,12 @@ async fn handle_paid(
                 return sign_json_response(&body, 400, &[], session)
                     .map_err(|e| Error::from(e.to_string()));
             }
-            let work_limit = match payment_work_limit(env) {
-                Ok(limit) => Ok(limit),
-                Err(err) => {
-                    let (status, body) = payment_verify_error_response(&err);
-                    return sign_json_response(&body, status, &[], session)
-                        .map_err(|e| Error::from(e.to_string()));
-                }
+            let work_limit = match checked_work_limit(payment_work_limit(env), |body, status| {
+                sign_json_response(body, status, &[], session)
+                    .map_err(|e| Error::from(e.to_string()))
+            }) {
+                Ok(limit) => limit,
+                Err(response) => return response,
             };
             let verified = match &payment {
                 IncomingPayment::Multipart(part) => {
@@ -870,7 +888,20 @@ fn handle_x402_info(env: &Env) -> Result<Response> {
                 "input": null,
                 "output": {
                     "contentType": "application/json",
-                    "schema": { "status": "string", "service": "string" }
+                    "schema": { "status": "string", "service": "string", "build": { "lib_rev": "string", "dirty": "boolean", "built_at": "string (hourly UTC RFC3339)", "crates": "object (crate names to versions)" } }
+                },
+                "delivery": "instant"
+            },
+            {
+                "path": "/health",
+                "method": "GET",
+                "auth": false,
+                "payment": null,
+                "description": "Health check with build provenance. Alias of /.",
+                "input": null,
+                "output": {
+                    "contentType": "application/json",
+                    "schema": { "status": "string", "service": "string", "build": { "lib_rev": "string", "dirty": "boolean", "built_at": "string (hourly UTC RFC3339)", "crates": "object (crate names to versions)" } }
                 },
                 "delivery": "instant"
             },
@@ -1366,6 +1397,75 @@ mod migration_tests {
                 bsv_middleware_cloudflare::env::parse_payment_work_limit(Some(value)).unwrap_err();
             let (status, body) = payment_verify_error_response(&err);
             assert_eq!(status, 500);
+            assert_eq!(body["code"], "ERR_SERVER_MISCONFIGURED");
+            assert!(body["description"]
+                .as_str()
+                .unwrap()
+                .contains("quote is still valid"));
+        }
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod signed_review_tests {
+    use super::*;
+    use bsv_middleware_cloudflare::middleware::AuthSession;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn session() -> AuthSession {
+        let server = PrivateKey::from_hex(&format!("{:064x}", 1u8)).unwrap();
+        let peer = PrivateKey::from_hex(&format!("{:064x}", 2u8)).unwrap();
+        AuthSession {
+            server_private_key: server.to_hex(),
+            session_nonce: bsv_sdk::primitives::to_base64(&[3; 32]),
+            peer_nonce: Some(bsv_sdk::primitives::to_base64(&[4; 32])),
+            peer_identity_key: peer.public_key().to_hex(),
+            request_id: [5; 32],
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn challenge_advertises_both_transports() {
+        let response = sign_json_response(
+            &serde_json::json!({"code": "ERR_PAYMENT_REQUIRED"}),
+            402,
+            &payment_challenge_headers("prefix"),
+            &session(),
+        )
+        .unwrap();
+        assert_eq!(response.status_code(), 402);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-bsv-payment-transports")
+                .unwrap()
+                .as_deref(),
+            Some("header,multipart")
+        );
+        assert!(response
+            .headers()
+            .get("x-bsv-auth-signature")
+            .unwrap()
+            .is_some());
+    }
+
+    #[wasm_bindgen_test]
+    async fn malformed_work_limit_returns_signed_500() {
+        for value in ["abc", "-1"] {
+            let session = session();
+            let mut response = checked_work_limit(
+                bsv_middleware_cloudflare::env::parse_payment_work_limit(Some(value)),
+                |body, status| sign_json_response(body, status, &[], &session),
+            )
+            .unwrap_err()
+            .unwrap();
+            assert_eq!(response.status_code(), 500);
+            assert!(response
+                .headers()
+                .get("x-bsv-auth-signature")
+                .unwrap()
+                .is_some());
+            let body = response.json::<serde_json::Value>().await.unwrap();
             assert_eq!(body["code"], "ERR_SERVER_MISCONFIGURED");
             assert!(body["description"]
                 .as_str()
