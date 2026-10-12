@@ -9,8 +9,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # BSV crates (from crates.io)
-bsv-middleware-cloudflare = { version = "0.5.2", features = ["refund", "d1-claims"] }
-bsv-sdk = { package = "bsv-rs", version = "0.4", features = ["auth", "wallet", "transaction", "wasm"] }
+bsv-middleware-cloudflare = { version = "0.6.0", features = ["refund", "d1-claims"] }
+bsv-sdk = { package = "bsv-rs", version = "0.5.0", features = ["auth", "wallet", "transaction", "wasm"] }
+
+bsv-worker-build-info = "=0.1.0"
 
 # Other crates (from crates.io)
 worker = { version = "0.8", features = ["d1"] }
@@ -22,3 +24,6 @@ wasm-bindgen = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[build-dependencies]
+bsv-worker-build-info = { version = "=0.1.0", features = ["build"] }

@@ -8,6 +8,7 @@ Rust Cloudflare Worker template with BRC-31 mutual authentication and BRC-29 mic
 bsv-agent-template/
 ├── src/
 │   └── lib.rs              # All worker logic: routing, auth, payment, handlers
+├── build.rs                # Captures revision, tracked dirty state, build hour and locked crate versions
 ├── Cargo.toml              # Rust deps (bsv-middleware-cloudflare, bsv-rs, worker 0.8)
 ├── wrangler.toml            # CF Worker config (placeholder account_id, KV id, CHAINTRACKS_URL)
 ├── package.json             # npm run dev / npm run build
@@ -35,7 +36,7 @@ npx wrangler deploy
 
 ## Dependencies
 
-- **bsv-sdk** (crates.io `bsv-rs` 0.4.5, `package = "bsv-rs"`) - BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `VerifiedPayment`.
+- **bsv-sdk** (crates.io `bsv-rs` 0.5.0, `package = "bsv-rs"`) - BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `VerifiedPayment`.
 - **worker** 0.8 (crates.io) - Cloudflare Workers Rust runtime. Build with the global `worker-build` 0.8.x.
 - **serde** / **serde_json** (crates.io) - JSON serialization.
 
@@ -62,7 +63,7 @@ npx wrangler deploy
 
 1. Check `x-bsv-payment` header
 2. **No header** → `create_nonce()` → bind nonce→price in KV (5-min TTL) → return 402 with payment headers (version, satoshis-required, derivation-prefix)
-3. **Header present** → parse `BsvPayment` JSON → `verify_nonce()` → verify nonce exists in KV → `from_base64()` decode tx → `verify_brc29_payment_verified()` with required CHAINTRACKS_URL and obtain txid → claim D1 nonce → `WorkerStorageClient` internalize with sender label via storage.babbage.systems → return 200 with receipt
+3. **Header present** → parse `BsvPayment` JSON → `verify_nonce()` → verify nonce exists in KV → stream payment bytes → `verify_brc29_payment_source()` with required CHAINTRACKS_URL and obtain txid → claim D1 nonce → `WorkerStorageClient` internalize with sender label via storage.babbage.systems → return 200 with receipt
 
 ### Key Constants
 
@@ -93,8 +94,8 @@ python3 brc31_helpers.py pay POST "http://localhost:8787/paid"  # spends 10 real
 Or basic health check:
 
 ```bash
-curl http://localhost:8787/
-# {"status":"ok","service":"bsv-agent-template"}
+curl http://localhost:8787/health
+# Returns status, service, and build (lib_rev, dirty, built_at, crates).
 ```
 
 ## Configuration
@@ -111,16 +112,21 @@ curl http://localhost:8787/
 - `.dev.vars` is gitignored. Only `.dev.vars.example` is committed. Never commit real keys.
 - The KV id in `wrangler.toml` is a placeholder - must be replaced before `wrangler dev` will work with KV persistence.
 
-Payment verification uses bsv-middleware-cloudflare 0.5.2, bsv-rs 0.4.5 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.6.0, bsv-rs 0.5.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote. After internalization, a KV failure refunds inline before the signed error and keeps the D1 claim held.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
 
 | Refusal | Signed status/code | Quote |
 | --- | --- | --- |
-| KeyDerivation, NoHeaderService, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
+| KeyDerivation, NoHeaderService, BadWorkLimit, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
 | Server-side Unverifiable | 503 ERR_HEADER_SERVICE_UNAVAILABLE | Kept; retry same payment |
 | Payer-side Unverifiable, wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
 
 The CLAIMS D1 binding requires your own database and the middleware payment_claims schema.
 All account, namespace, database and key configuration in this template is placeholders only.
+
+The paid handler splits authenticated multipart bodies with `split_multipart_payment` and verifies through `verify_brc29_payment_source`. Multipart BEEF is decoded in chunks; internalization uses `PaymentPart::encoded_transaction()`.
+`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the new bsv-rs 0.5.0 invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
+`GET /health` (also `/`) returns `status`, `service`, and `build` with `lib_rev`, tracked-file `dirty`, hourly UTC `built_at`, and the three crate versions from Cargo.lock, using bsv-worker-build-info 0.1.0. Build metadata needs no credentials.
+After a refunded storage failure, the D1 claim remains held: request a fresh 402 quote before paying again.

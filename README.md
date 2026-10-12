@@ -59,7 +59,7 @@ npm run dev
 
 | Route | Method | Auth | Payment | What it does |
 |:------|:------:|:----:|:-------:|:-------------|
-| `/` | `GET` | - | - | Health check. Returns `{"status": "ok"}` |
+| `/`, `/health` | `GET` | - | - | Health check with status, service and build provenance |
 | `/.well-known/x402-info` | `GET` | - | - | API discovery manifest (endpoints, pricing, server identity) |
 | `/.well-known/auth` | `POST` | - | - | BRC-31 handshake (handled automatically by middleware) |
 | `/free` | `POST` | Yes | - | Returns a greeting with the caller's identity key |
@@ -189,8 +189,8 @@ python3 brc31_helpers.py pay POST "http://localhost:8787/paid"
 Or test the health check with curl:
 
 ```bash
-curl http://localhost:8787/
-# {"status":"ok","service":"bsv-agent-template"}
+curl http://localhost:8787/health
+# Returns status, service, and build (lib_rev, dirty, built_at, crates).
 ```
 
 ---
@@ -201,6 +201,7 @@ curl http://localhost:8787/
 bsv-agent-template/
 ├── src/
 │   └── lib.rs              # Worker entry point, routing, handlers
+├── build.rs                # Captures revision, tracked dirty state, build hour and locked crate versions
 ├── Cargo.toml              # Rust dependencies
 ├── wrangler.toml           # Cloudflare Worker config
 ├── package.json            # npm scripts (dev, build)
@@ -212,9 +213,9 @@ bsv-agent-template/
 
 | Crate | Source | Purpose |
 |:------|:------:|:--------|
-| `bsv-middleware-cloudflare` 0.5.2 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
-| `bsv-middleware-core` 0.2.2 | crates.io | Payment verification core (transitive dependency) |
-| `bsv-sdk` (package `bsv-rs` 0.4.5) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
+| `bsv-middleware-cloudflare` 0.6.0 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-middleware-core` 0.3.0 | crates.io | Payment verification core (transitive dependency) |
+| `bsv-sdk` (package `bsv-rs` 0.5.0) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
 | `worker` 0.8 | crates.io | Cloudflare Workers runtime |
 | `serde` / `serde_json` | crates.io | JSON serialization |
 
@@ -266,14 +267,14 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 
 MIT
 
-Payment verification uses bsv-middleware-cloudflare 0.5.2, bsv-middleware-core 0.2.2, bsv-rs 0.4.5 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.6.0, bsv-middleware-core 0.3.0, bsv-rs 0.5.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
 
 | Refusal | Signed status/code | Quote |
 | --- | --- | --- |
-| KeyDerivation, NoHeaderService, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
+| KeyDerivation, NoHeaderService, BadWorkLimit, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
 | Server-side Unverifiable | 503 ERR_HEADER_SERVICE_UNAVAILABLE | Kept; retry same payment |
 | Payer-side Unverifiable, wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
 
@@ -285,3 +286,8 @@ Cargo.lock contains public crates.io SHA-256 checksums only. These documented 64
 After replacing the D1 placeholders, apply the included schema with `npx wrangler d1 migrations apply CLAIMS --remote`. The adapter rejects a message whose identity is not the session identity with HTTP 401 ERR_INVALID_AUTH before routing.
 
 Every response built by a handler after verified payment, including success, refusal and generic error responses, is signed with `sign_json_response`. Following the fleet rule, a storage failure after internalize attempts a full inline refund of the actual verified amount before returning the signed error. The D1 nonce claim stays held so the accepted payment cannot be replayed, even if KV quote deletion fails. The error includes the refund remittance on success; if refund issuance fails, it reports `ERR_STORAGE_FAILED_REFUND_FAILED` and the owed amount for operator recovery. This minimal template does not journal deferred refunds. Work and memory declines remain payer-side `Unverifiable`, returned as 400 `ERR_PAYMENT_INVALID` with the reason named.
+
+The paid handler splits authenticated multipart bodies with `split_multipart_payment` and verifies through `verify_brc29_payment_source`. Multipart BEEF is decoded in chunks; internalization uses `PaymentPart::encoded_transaction()`.
+`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the new bsv-rs 0.5.0 invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
+`GET /health` (also `/`) returns `status`, `service`, and `build` with `lib_rev`, tracked-file `dirty`, hourly UTC `built_at`, and the three crate versions from Cargo.lock, using bsv-worker-build-info 0.1.0. Build metadata needs no credentials.
+After a refunded storage failure, the D1 claim remains held: request a fresh 402 quote before paying again.
