@@ -263,10 +263,6 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 
 ---
 
-## License
-
-MIT
-
 Payment verification uses bsv-middleware-cloudflare 0.6.0, bsv-middleware-core 0.3.0, bsv-rs 0.5.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote.
@@ -291,3 +287,9 @@ The paid handler splits authenticated multipart bodies with `split_multipart_pay
 `PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the new bsv-rs 0.5.0 invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
 `GET /health` (also `/`) returns `status`, `service`, and `build` with `lib_rev`, tracked-file `dirty`, hourly UTC `built_at`, and the three crate versions from Cargo.lock, using bsv-worker-build-info 0.1.0. Build metadata needs no credentials. The Wrangler build command sets `BUILD_HOUR=$(date -u +%Y-%m-%dT%H)` so Cargo refreshes `built_at` each UTC hour; direct cached builds without `BUILD_HOUR` can retain an older timestamp.
 After a refunded storage failure, the D1 claim remains held: request a fresh 402 quote before paying again.
+
+## License
+
+Dual-licensed under MIT or Apache-2.0 at your option. See LICENSE-MIT and LICENSE-APACHE.
+
+Contributions are accepted under the same terms.
