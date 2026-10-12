@@ -891,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_price_is_set() {
-        assert!(PAID_ENDPOINT_PRICE > 0, "Price must be at least 1 satoshi");
+        const { assert!(PAID_ENDPOINT_PRICE > 0, "Price must be at least 1 satoshi") };
     }
 
     #[tokio::test]
