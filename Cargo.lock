@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "bsv-middleware-cloudflare"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f853ea8a78629c517ea8b2885af8356d026dc1ac34ecaa6b23b19eae2ec45069"
+checksum = "c40b3f7fe7e3e7b1181ffca71bfc50405a2df27fab113c74c3db9c81d8e2440d"
 dependencies = [
  "async-trait",
  "base64",
@@ -141,9 +141,9 @@ dependencies = [
 
 [[package]]
 name = "bsv-middleware-core"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "531fe02043206d4acd28ddb8f0ef5bb3beefd1ec37aa6092aca2726f252f78a1"
+checksum = "7edede350127a3bbbe6097b121de0d48e352e20384137ec3d88ee521d141b435"
 dependencies = [
  "bsv-rs",
  "getrandom",
