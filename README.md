@@ -212,7 +212,8 @@ bsv-agent-template/
 
 | Crate | Source | Purpose |
 |:------|:------:|:--------|
-| `bsv-middleware-cloudflare` 0.5.1 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-middleware-cloudflare` 0.5.2 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-middleware-core` 0.2.2 | crates.io | Payment verification core (transitive dependency) |
 | `bsv-sdk` (package `bsv-rs` 0.4.5) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
 | `worker` 0.8 | crates.io | Cloudflare Workers runtime |
 | `serde` / `serde_json` | crates.io | JSON serialization |
@@ -265,9 +266,9 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 
 MIT
 
-Payment verification uses bsv-middleware-cloudflare 0.5.1, bsv-rs 0.4.5 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.5.2, bsv-middleware-core 0.2.2, bsv-rs 0.4.5 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
-Verification runs before the D1 nonce claim. Storage failures release the claim and keep the quote.
+Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
 
 | Refusal | Signed status/code | Quote |
@@ -282,3 +283,5 @@ All account, namespace, database and key configuration in this template is place
 Cargo.lock contains public crates.io SHA-256 checksums only. These documented 64-hex integrity values are not identities or secrets. Nonce tests construct example scalars 1 and 2 in memory.
 
 After replacing the D1 placeholders, apply the included schema with `npx wrangler d1 migrations apply CLAIMS --remote`. The adapter rejects a message whose identity is not the session identity with HTTP 401 ERR_INVALID_AUTH before routing.
+
+Every response built by a handler after verified payment, including success, refusal and generic error responses, is signed with `sign_json_response`. Following the fleet rule, a storage failure after internalize attempts a full inline refund of the actual verified amount before returning the signed error. The D1 nonce claim stays held so the accepted payment cannot be replayed, even if KV quote deletion fails. The error includes the refund remittance on success; if refund issuance fails, it reports `ERR_STORAGE_FAILED_REFUND_FAILED` and the owed amount for operator recovery. This minimal template does not journal deferred refunds. Work and memory declines remain payer-side `Unverifiable`, returned as 400 `ERR_PAYMENT_INVALID` with the reason named.

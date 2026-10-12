@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # BSV crates (from crates.io)
-bsv-middleware-cloudflare = { version = "0.5.1", features = ["refund", "d1-claims"] }
+bsv-middleware-cloudflare = { version = "0.5.2", features = ["refund", "d1-claims"] }
 bsv-sdk = { package = "bsv-rs", version = "0.4", features = ["auth", "wallet", "transaction", "wasm"] }
 
 # Other crates (from crates.io)

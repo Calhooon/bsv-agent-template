@@ -528,7 +528,8 @@ async fn handle_paid(
                     .map_err(|e| Error::from(e.to_string()));
             }
             // Hold the quote until storage accepts the payment. Any failure in
-            // this block releases the D1 claim before returning a response.
+            // this internalization block releases the D1 claim on failure.
+            // Once accepted, retain the claim even if later storage fails.
             let storage_result: Result<serde_json::Value> = async {
                 // ── Internalize payment via storage.babbage.systems ─────
                 //
@@ -596,11 +597,26 @@ async fn handle_paid(
             .await;
             if storage_result.is_err() {
                 release_payment_nonce(&claims_db, &payment.derivation_prefix).await;
-            } else {
-                if let Err(e) = kv.delete(&kv_key).await {
-                    release_payment_nonce(&claims_db, &payment.derivation_prefix).await;
-                    return Err(e.into());
-                }
+            } else if let Some(body) = store_after_internalize(
+                kv.delete(&kv_key),
+                || {
+                    issue_refund(
+                        server_key,
+                        &auth_context.identity_key,
+                        verified.satoshis,
+                        "Quote storage failed after internalize",
+                        ORIGINATOR,
+                        None,
+                    )
+                },
+                verified.satoshis,
+            )
+            .await
+            {
+                // Fleet rule: refund inline before the signed storage error.
+                // Keep the D1 nonce claim held: this payment was accepted.
+                return sign_json_response(&body, 500, &[], session)
+                    .map_err(|e| Error::from(e.to_string()));
             }
             match storage_result {
                 Ok(result) => {
@@ -628,6 +644,7 @@ async fn handle_paid(
                     //               PAID_ENDPOINT_PRICE,
                     //               &format!("Service failed: {}", e),
                     //               ORIGINATOR,
+                    //               None,
                     //           ).await {
                     //               Ok(refund) => {
                     //                   let body = serde_json::json!({
@@ -677,6 +694,47 @@ async fn handle_paid(
             }
         }
     }
+}
+
+// Separate the post-internalize storage boundary so refund ordering is testable
+// without Worker JavaScript APIs. The caller signs only after this completes.
+async fn store_after_internalize<S, R, F, E, RE>(
+    store: S,
+    refund: F,
+    paid_satoshis: u64,
+) -> Option<serde_json::Value>
+where
+    S: std::future::Future<Output = std::result::Result<(), E>>,
+    F: FnOnce() -> R,
+    R: std::future::Future<
+        Output = std::result::Result<bsv_middleware_cloudflare::refund::RefundInfo, RE>,
+    >,
+    E: std::fmt::Display,
+    RE: std::fmt::Display,
+{
+    let error = store.await.err()?;
+    Some(match refund().await {
+        Ok(refund) => serde_json::json!({
+            "status": "error",
+            "code": "ERR_STORAGE_FAILED_REFUND_ISSUED",
+            "description": error.to_string(),
+            "refund": {
+                "transaction": refund.transaction,
+                "derivationPrefix": refund.derivation_prefix,
+                "derivationSuffix": refund.derivation_suffix,
+                "senderIdentityKey": refund.sender_identity_key,
+                "satoshis": refund.satoshis,
+                "txid": refund.txid,
+            }
+        }),
+        Err(refund_error) => serde_json::json!({
+            "status": "error",
+            "code": "ERR_STORAGE_FAILED_REFUND_FAILED",
+            "description": error.to_string(),
+            "refund_error": refund_error.to_string(),
+            "owed_sats": paid_satoshis,
+        }),
+    })
 }
 
 // ─── /.well-known/x402-info ─────────────────────────────────────────
@@ -1092,5 +1150,76 @@ mod payment_gate_tests {
             assert_ne!(body["code"], "ERR_HEADER_SERVICE_UNAVAILABLE");
             assert_ne!(status, 503);
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_refund_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn storage_failure_refunds_before_returning_error_body() {
+        let stored = Cell::new(false);
+        let refunded = Cell::new(false);
+        let body = store_after_internalize(
+            async {
+                stored.set(true);
+                Err("KV unavailable")
+            },
+            || async {
+                assert!(stored.get());
+                refunded.set(true);
+                Ok::<_, &str>(bsv_middleware_cloudflare::refund::RefundInfo {
+                    transaction: "placeholder-beef".into(),
+                    derivation_prefix: "placeholder-prefix".into(),
+                    derivation_suffix: "placeholder-suffix".into(),
+                    sender_identity_key: "placeholder-identity".into(),
+                    satoshis: 137,
+                    txid: "placeholder-txid".into(),
+                })
+            },
+            137,
+        )
+        .await
+        .unwrap();
+        assert!(refunded.get(), "refund must finish before the caller signs");
+        assert_eq!(body["code"], "ERR_STORAGE_FAILED_REFUND_ISSUED");
+        assert_eq!(body["refund"]["satoshis"], 137);
+        assert_eq!(body["refund"]["derivationPrefix"], "placeholder-prefix");
+    }
+
+    #[tokio::test]
+    async fn refund_failure_reports_actual_owed_amount() {
+        let body = store_after_internalize(
+            async { Err("KV unavailable") },
+            || async {
+                Err::<bsv_middleware_cloudflare::refund::RefundInfo, _>("wallet unavailable")
+            },
+            137,
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["code"], "ERR_STORAGE_FAILED_REFUND_FAILED");
+        assert_eq!(body["owed_sats"], 137);
+        assert_eq!(body["refund_error"], "wallet unavailable");
+    }
+
+    #[tokio::test]
+    async fn successful_storage_never_refunds() {
+        let refunded = Cell::new(false);
+        let body = store_after_internalize(
+            async { Ok::<_, &str>(()) },
+            || {
+                refunded.set(true);
+                std::future::ready(Err::<bsv_middleware_cloudflare::refund::RefundInfo, _>(
+                    "unexpected refund",
+                ))
+            },
+            137,
+        )
+        .await;
+        assert!(body.is_none());
+        assert!(!refunded.get());
     }
 }
