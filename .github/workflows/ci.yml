@@ -95,9 +95,15 @@ jobs:
           restore-keys: |
             ubuntu-wasm32-
       - name: Run wasm32
-        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+      - name: Install Wasm test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - name: Test signed Worker responses
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test --target wasm32-unknown-unknown signed_review_tests
       - name: Install worker-build
         run: cargo install worker-build --locked
       - name: Build the Worker without deployment credentials
-        run: worker-build --release
+        run: BUILD_HOUR=$(date -u +%Y-%m-%dT%H) worker-build --release
 

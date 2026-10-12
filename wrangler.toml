@@ -6,7 +6,7 @@ compatibility_date = "2024-01-01"
 account_id = "your-cloudflare-account-id-here"
 
 [build]
-command = "worker-build --release"
+command = "BUILD_HOUR=$(date -u +%Y-%m-%dT%H) worker-build --release"
 
 # KV namespace for auth sessions.
 # Create one with: npx wrangler kv namespace create AUTH_SESSIONS
