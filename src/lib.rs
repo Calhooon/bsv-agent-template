@@ -35,15 +35,51 @@ use bsv_middleware_cloudflare::{
         auth::handle_cors_preflight, payment::payment_headers, process_auth, sign_json_response,
         AuthMiddlewareOptions, AuthResult,
     },
+    payment_work_limit,
     refund::issue_refund,
-    release_payment_nonce,
+    release_payment_nonce, split_multipart_payment,
     types::BsvPayment,
-    PaymentVerifyError,
+    PaymentPart, PaymentVerifyError,
 };
 use bsv_sdk::auth::utils::{create_nonce, verify_nonce};
 use bsv_sdk::primitives::{from_base64, PrivateKey};
 use bsv_sdk::wallet::ProtoWallet;
 use worker::*;
+
+mod health;
+
+enum IncomingPayment {
+    Multipart(PaymentPart),
+    Header(BsvPayment),
+}
+impl IncomingPayment {
+    fn prefix(&self) -> &str {
+        match self {
+            Self::Multipart(p) => p.prefix(),
+            Self::Header(p) => &p.derivation_prefix,
+        }
+    }
+    fn suffix(&self) -> &str {
+        match self {
+            Self::Multipart(p) => p.suffix(),
+            Self::Header(p) => &p.derivation_suffix,
+        }
+    }
+    fn decoded_transaction(&self) -> Result<Vec<u8>> {
+        let encoded = match self {
+            Self::Multipart(p) => std::str::from_utf8(p.encoded_transaction())
+                .map_err(|e| Error::from(e.to_string()))?,
+            Self::Header(p) => &p.transaction,
+        };
+        from_base64(encoded).map_err(|e| Error::from(e.to_string()))
+    }
+}
+struct OwnedSource(Option<Vec<u8>>);
+impl bsv_sdk::transaction::beef_stream::AsyncByteSource for OwnedSource {
+    async fn next_chunk(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self.0.take())
+    }
+}
 
 // ─── Configuration ──────────────────────────────────────────────────
 //
@@ -76,10 +112,11 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     // ── Public endpoints (no auth required) ─────────────────────────
 
     // Health check - useful for uptime monitoring
-    if req.path() == "/" && req.method() == Method::Get {
+    if matches!(req.path().as_str(), "/" | "/health") && req.method() == Method::Get {
         let response = Response::from_json(&serde_json::json!({
             "status": "ok",
-            "service": AGENT_NAME
+            "service": AGENT_NAME,
+            "build": health::build_json()
         }))?;
         return Ok(add_cors_headers(response));
     }
@@ -157,7 +194,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 &auth_context,
                 &session,
                 &server_key,
-                &request_body,
+                request_body,
                 &env,
             )
             .await
@@ -200,25 +237,28 @@ fn chaintracks_url_of(env: &Env) -> std::result::Result<String, PaymentVerifyErr
 /// the crate verifier against it as `Some(url)`. Without a usable header
 /// service the verifier is never called and the payment is refused with
 /// `NoHeaderService`.
-async fn verify_paid_output(
+#[allow(clippy::too_many_arguments)]
+async fn verify_paid_output<S: bsv_sdk::transaction::beef_stream::AsyncByteSource>(
     header_service: std::result::Result<String, PaymentVerifyError>,
     server_key: &str,
     sender_identity_key: &str,
     derivation_prefix: &str,
     derivation_suffix: &str,
-    tx_bytes: &[u8],
+    source: &mut S,
     required_satoshis: u64,
+    work_limit: std::result::Result<Option<u64>, PaymentVerifyError>,
 ) -> std::result::Result<bsv_middleware_cloudflare::VerifiedPayment, PaymentVerifyError> {
     let url = header_service?;
-    bsv_middleware_cloudflare::verify_brc29_payment_verified(
+    bsv_middleware_cloudflare::verify_brc29_payment_source(
         server_key,
         sender_identity_key,
         derivation_prefix,
         derivation_suffix,
-        tx_bytes,
+        source,
         0,
         required_satoshis,
         Some(url.as_str()),
+        work_limit?,
     )
     .await
 }
@@ -245,6 +285,11 @@ async fn verify_paid_output(
 /// crate adds is a compile error here, never a silent 400.
 fn payment_verify_error_response(err: &PaymentVerifyError) -> (u16, serde_json::Value) {
     match err {
+        PaymentVerifyError::BadWorkLimit { .. } => (
+            500,
+            serde_json::json!({"status": "error", "code": "ERR_SERVER_MISCONFIGURED",
+                "description": format!("Payment not verified: {}. Nothing was charged and the quote is still valid - retry after the operator fixes PAYMENT_WORK_LIMIT.", err)}),
+        ),
         PaymentVerifyError::NoHeaderService => (
             500,
             serde_json::json!({
@@ -259,7 +304,7 @@ fn payment_verify_error_response(err: &PaymentVerifyError) -> (u16, serde_json::
                 "status": "error",
                 "code": "ERR_HEADER_SERVICE_UNAVAILABLE",
                 "description": format!(
-                    "Payment not verified: header service unavailable ({}), so the payment's merkle root could not be checked against a block header. Nothing was charged and the quote is still valid - retry the same payment shortly.",
+                    "Payment not verified: header service unavailable ({}), so the payment's proof or mining context could not be checked. Nothing was charged and the quote is still valid - retry the same payment shortly.",
                     reason
                 ),
             }),
@@ -356,7 +401,7 @@ async fn handle_paid(
     auth_context: &bsv_middleware_cloudflare::types::AuthContext,
     session: &bsv_middleware_cloudflare::middleware::AuthSession,
     server_key: &str,
-    request_body: &[u8],
+    request_body: Vec<u8>,
     env: &Env,
 ) -> Result<Response> {
     let private_key = match PrivateKey::from_hex(server_key) {
@@ -375,20 +420,38 @@ async fn handle_paid(
     //   - Body mode:   x-bsv-payment is "body", payment JSON is in request body
     let payment_header = req.headers().get(payment_headers::PAYMENT).ok().flatten();
 
-    let payment_json: Option<String> = match payment_header.as_deref() {
-        Some("body") => {
-            // Body mode - payment JSON is in the request body
-            if request_body.is_empty() {
-                None
-            } else {
-                Some(String::from_utf8_lossy(request_body).into_owned())
-            }
+    let multipart = match split_multipart_payment(req, request_body) {
+        Ok(parts) => parts,
+        Err(e) => {
+            let body = serde_json::json!({"status": "error", "code": "ERR_PAYMENT_INVALID",
+                "description": format!("Payment rejected: {}. The quote is still valid.", e)});
+            return sign_json_response(&body, 400, &[], session)
+                .map_err(|e| Error::from(e.to_string()));
         }
-        Some(json) => Some(json.to_string()),
-        None => None,
     };
-
-    match payment_json {
+    let payment_json = match payment_header.as_deref() {
+        Some("body") if !multipart.body.is_empty() => {
+            Some(String::from_utf8_lossy(&multipart.body).into_owned())
+        }
+        Some("body") | None => None,
+        Some(json) => Some(json.to_string()),
+    };
+    let payment = match multipart.payment {
+        Some(part) => Some(IncomingPayment::Multipart(part)),
+        None => match payment_json {
+            Some(json) => match serde_json::from_str::<BsvPayment>(&json) {
+                Ok(payment) => Some(IncomingPayment::Header(payment)),
+                Err(e) => {
+                    let body = serde_json::json!({"status": "error", "code": "ERR_PAYMENT_INVALID",
+                        "description": format!("Payment rejected: invalid payment JSON: {}. The quote is still valid.", e)});
+                    return sign_json_response(&body, 400, &[], session)
+                        .map_err(|e| Error::from(e.to_string()));
+                }
+            },
+            None => None,
+        },
+    };
+    match payment {
         None => {
             // ── No payment → return 402 ─────────────────────────────
             //
@@ -444,24 +507,13 @@ async fn handle_paid(
             sign_json_response(&body, 402, &payment_hdrs, session)
                 .map_err(|e| Error::from(e.to_string()))
         }
-        Some(payment_json_str) => {
-            // ── Payment provided → verify and internalize ───────────
-
-            // Parse the payment JSON from the client
-            let payment: BsvPayment = match serde_json::from_str(&payment_json_str) {
-                Ok(payment) => payment,
-                Err(e) => {
-                    let body = serde_json::json!({"status": "error", "code": "ERR_PAYMENT_INVALID",
-                        "description": format!("Payment rejected: invalid payment JSON: {}. The quote is still valid.", e)});
-                    return sign_json_response(&body, 400, &[], session)
-                        .map_err(|e| Error::from(e.to_string()));
-                }
-            };
-
+        Some(payment) => {
+            let derivation_prefix = payment.prefix();
+            let derivation_suffix = payment.suffix();
             // Verify the derivation prefix is a nonce we issued.
             // This prevents replay attacks - only nonces created by our
             // server with our private key will pass verification.
-            let nonce_valid = verify_nonce(&payment.derivation_prefix, &wallet, None, ORIGINATOR)
+            let nonce_valid = verify_nonce(derivation_prefix, &wallet, None, ORIGINATOR)
                 .await
                 .unwrap_or(false);
 
@@ -478,7 +530,7 @@ async fn handle_paid(
             // Verify the quote exists in KV, then verify the payment before claiming it.
             // D1 serializes concurrent attempts; keep the quote on a refusal.
             let kv = env.kv("AUTH_SESSIONS")?;
-            let kv_key = format!("price:{}", payment.derivation_prefix);
+            let kv_key = format!("price:{}", derivation_prefix);
             let stored = kv.get(&kv_key).text().await?;
             if stored.is_none() {
                 let body = serde_json::json!({
@@ -489,26 +541,50 @@ async fn handle_paid(
                 return sign_json_response(&body, 400, &[], session)
                     .map_err(|e| Error::from(e.to_string()));
             }
-            let tx_bytes = match from_base64(&payment.transaction) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let body = serde_json::json!({"status": "error", "code": "ERR_PAYMENT_INVALID",
-                        "description": format!("Payment rejected: invalid base64: {}. The quote is still valid.", e)});
-                    return sign_json_response(&body, 502, &[], session)
+            let work_limit = match payment_work_limit(env) {
+                Ok(limit) => Ok(limit),
+                Err(err) => {
+                    let (status, body) = payment_verify_error_response(&err);
+                    return sign_json_response(&body, status, &[], session)
                         .map_err(|e| Error::from(e.to_string()));
                 }
             };
-            let verified = match verify_paid_output(
-                chaintracks_url_of(env),
-                server_key,
-                &auth_context.identity_key,
-                &payment.derivation_prefix,
-                &payment.derivation_suffix,
-                &tx_bytes,
-                PAID_ENDPOINT_PRICE,
-            )
-            .await
-            {
+            let verified = match &payment {
+                IncomingPayment::Multipart(part) => {
+                    verify_paid_output(
+                        chaintracks_url_of(env),
+                        server_key,
+                        &auth_context.identity_key,
+                        derivation_prefix,
+                        derivation_suffix,
+                        &mut part.transaction(),
+                        PAID_ENDPOINT_PRICE,
+                        work_limit,
+                    )
+                    .await
+                }
+                IncomingPayment::Header(header) => match from_base64(&header.transaction) {
+                    Ok(bytes) => {
+                        verify_paid_output(
+                            chaintracks_url_of(env),
+                            server_key,
+                            &auth_context.identity_key,
+                            derivation_prefix,
+                            derivation_suffix,
+                            &mut OwnedSource(Some(bytes)),
+                            PAID_ENDPOINT_PRICE,
+                            work_limit,
+                        )
+                        .await
+                    }
+                    Err(e) => Err(PaymentVerifyError::Unverifiable {
+                        reason: bsv_middleware_cloudflare::UnverifiableReason::MalformedTransaction(
+                            e.to_string(),
+                        ),
+                    }),
+                },
+            };
+            let verified = match verified {
                 Ok(verified) => verified,
                 Err(err) => {
                     let (status, body) = payment_verify_error_response(&err);
@@ -518,12 +594,12 @@ async fn handle_paid(
             };
             let txid = Some(verified.txid);
             let claims_db = env.d1("CLAIMS")?;
-            if !claim_payment_nonce(&claims_db, &payment.derivation_prefix, ORIGINATOR)
+            if !claim_payment_nonce(&claims_db, derivation_prefix, ORIGINATOR)
                 .await
                 .map_err(|e| Error::from(e.to_string()))?
             {
                 let body = serde_json::json!({"status": "error", "code": "ERR_PAYMENT_INVALID",
-                    "description": "Payment rejected: nonce already claimed. The quote is still valid."});
+                    "description": "Payment rejected: nonce already claimed. Request a fresh 402 quote before paying again, including after a refunded storage error."});
                 return sign_json_response(&body, 400, &[], session)
                     .map_err(|e| Error::from(e.to_string()));
             }
@@ -569,13 +645,13 @@ async fn handle_paid(
                     "userId": user_id
                 });
                 let args_json = serde_json::json!({
-                    "tx": tx_bytes,
+                    "tx": payment.decoded_transaction()?,
                     "outputs": [{
                         "outputIndex": 0,
                         "protocol": "wallet payment",
                         "paymentRemittance": {
-                            "derivationPrefix": payment.derivation_prefix,
-                            "derivationSuffix": payment.derivation_suffix,
+                            "derivationPrefix": derivation_prefix,
+                            "derivationSuffix": derivation_suffix,
                             "senderIdentityKey": auth_context.identity_key
                         }
                     }],
@@ -596,7 +672,7 @@ async fn handle_paid(
             }
             .await;
             if storage_result.is_err() {
-                release_payment_nonce(&claims_db, &payment.derivation_prefix).await;
+                release_payment_nonce(&claims_db, derivation_prefix).await;
             } else if let Some(body) = store_after_internalize(
                 kv.delete(&kv_key),
                 || {
@@ -717,7 +793,7 @@ where
         Ok(refund) => serde_json::json!({
             "status": "error",
             "code": "ERR_STORAGE_FAILED_REFUND_ISSUED",
-            "description": error.to_string(),
+            "description": format!("{}. Payment refunded; the nonce claim remains held. Request a fresh 402 quote before paying again.", error),
             "refund": {
                 "transaction": refund.transaction,
                 "derivationPrefix": refund.derivation_prefix,
@@ -1185,6 +1261,7 @@ mod storage_refund_tests {
         .unwrap();
         assert!(refunded.get(), "refund must finish before the caller signs");
         assert_eq!(body["code"], "ERR_STORAGE_FAILED_REFUND_ISSUED");
+        assert!(body["description"].as_str().unwrap().contains("fresh 402"));
         assert_eq!(body["refund"]["satoshis"], 137);
         assert_eq!(body["refund"]["derivationPrefix"], "placeholder-prefix");
     }
@@ -1221,5 +1298,79 @@ mod storage_refund_tests {
         .await;
         assert!(body.is_none());
         assert!(!refunded.get());
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    #[test]
+    fn new_sdk_refusals_keep_their_side() {
+        use bsv_middleware_cloudflare::UnverifiableReason;
+        for kind in [
+            "UnprovenCoinbase",
+            "NullOutpoint",
+            "DuplicateInput",
+            "ValueOutOfRange",
+        ] {
+            let err = PaymentVerifyError::Unverifiable {
+                reason: UnverifiableReason::InvalidBeef {
+                    offset: 7,
+                    kind: kind.into(),
+                    reason: kind.into(),
+                },
+            };
+            let (status, body) = payment_verify_error_response(&err);
+            assert_eq!(status, 400);
+            assert_eq!(body["code"], "ERR_PAYMENT_INVALID");
+            assert!(body["description"].as_str().unwrap().contains(kind));
+        }
+        for why in [
+            "InputValueOutOfRange",
+            "P2shOutput",
+            "NonFinal",
+            "PrematureCoinbase",
+        ] {
+            let err = PaymentVerifyError::Unverifiable {
+                reason: UnverifiableReason::SpendRefused {
+                    offset: 7,
+                    txid: "placeholder-txid".into(),
+                    input: Some(0),
+                    why: why.into(),
+                },
+            };
+            let (status, body) = payment_verify_error_response(&err);
+            assert_eq!(status, 400);
+            assert_eq!(body["code"], "ERR_PAYMENT_INVALID");
+            assert!(body["description"].as_str().unwrap().contains(why));
+        }
+        for check in ["Finality", "CoinbaseMaturity"] {
+            let err = PaymentVerifyError::Unverifiable {
+                reason: UnverifiableReason::MiningContextUnavailable {
+                    offset: 7,
+                    txid: "placeholder-txid".into(),
+                    input: Some(0),
+                    check: check.into(),
+                },
+            };
+            let (status, body) = payment_verify_error_response(&err);
+            assert_eq!(status, 503);
+            assert_eq!(body["code"], "ERR_HEADER_SERVICE_UNAVAILABLE");
+            assert!(body["description"].as_str().unwrap().contains(check));
+        }
+    }
+    #[test]
+    fn bad_work_limit_is_host_misconfiguration_and_keeps_quote() {
+        for value in ["0", "invalid", "18446744073709551616"] {
+            let err =
+                bsv_middleware_cloudflare::env::parse_payment_work_limit(Some(value)).unwrap_err();
+            let (status, body) = payment_verify_error_response(&err);
+            assert_eq!(status, 500);
+            assert_eq!(body["code"], "ERR_SERVER_MISCONFIGURED");
+            assert!(body["description"]
+                .as_str()
+                .unwrap()
+                .contains("quote is still valid"));
+        }
     }
 }
