@@ -16,7 +16,7 @@ binding = "AUTH_SESSIONS"
 id = "your-kv-namespace-id-here"
 
 # Block-header (ChainTracks) service used for SPV checks on incoming payments.
-# Required by bsv-middleware-cloudflare 0.6.0 on bsv-rs 0.5.0.
+# Required by bsv-middleware-cloudflare 0.6.1 on bsv-rs 0.5.0.
 # Missing, blank or placeholder services refuse payment with signed 500.
 # Set this to your own header service before you deploy.
 [vars]

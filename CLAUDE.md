@@ -112,7 +112,7 @@ curl http://localhost:8787/health
 - `.dev.vars` is gitignored. Only `.dev.vars.example` is committed. Never commit real keys.
 - The KV id in `wrangler.toml` is a placeholder - must be replaced before `wrangler dev` will work with KV persistence.
 
-Payment verification uses bsv-middleware-cloudflare 0.6.0, bsv-rs 0.5.0 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.6.1, bsv-rs 0.5.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote. After internalization, a KV failure refunds inline before the signed error and keeps the D1 claim held.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
