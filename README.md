@@ -171,6 +171,10 @@ Add your endpoint to the `handle_x402_info` function so clients can discover it 
 
 ---
 
+## CI
+
+The required checks are `clippy`, `deny` (cargo-deny), and `secrets` (secrets scan), while `test`, `fmt`, and `wasm32` are advisory and non-blocking; docs-only PRs still run all six jobs.
+
 ## Testing
 
 Use the [x402-client](https://github.com/Calgooon/x402) to test against your running server:
