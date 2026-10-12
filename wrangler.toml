@@ -16,6 +16,15 @@ binding = "AUTH_SESSIONS"
 id = "your-kv-namespace-id-here"
 
 # Block-header (ChainTracks) service used for SPV checks on incoming payments.
-# Placeholder: set this to your own header service before you deploy.
+# Required by bsv-middleware-cloudflare 0.5.1 on bsv-rs 0.4.5.
+# Missing, blank or placeholder services refuse payment with signed 500.
+# Set this to your own header service before you deploy.
 [vars]
 CHAINTRACKS_URL = "https://chaintracks.invalid"
+
+# Atomic payment nonce claims. Create your own D1 database and apply
+# the middleware payment_claims schema before deployment.
+[[d1_databases]]
+binding = "CLAIMS"
+database_name = "your-payment-claims-database-name-here"
+database_id = "your-d1-database-id-here"

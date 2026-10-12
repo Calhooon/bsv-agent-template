@@ -35,10 +35,9 @@ npx wrangler deploy
 
 ## Dependencies
 
-- **bsv-middleware-cloudflare** (crates.io, `features = ["refund", "d1-claims"]`; TEMP path dep `../wt-middleware-lane/.claude/worktrees/mw-port` until 0.3.6 publishes, M5 #36) — BRC-31 auth middleware: handshake, session management, request/response signing, CORS, payment header constants, `WorkerStorageClient` for internalizing payments via `storage.babbage.systems`.
-- **bsv-sdk** (crates.io `bsv-rs` 0.3, `package = "bsv-rs"`) — BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `Transaction::from_beef`.
-- **worker** 0.8 (crates.io) — Cloudflare Workers Rust runtime. Build with the global `worker-build` 0.8.x.
-- **serde** / **serde_json** (crates.io) — JSON serialization.
+- **bsv-sdk** (crates.io `bsv-rs` 0.4.5, `package = "bsv-rs"`) - BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `VerifiedPayment`.
+- **worker** 0.8 (crates.io) - Cloudflare Workers Rust runtime. Build with the global `worker-build` 0.8.x.
+- **serde** / **serde_json** (crates.io) - JSON serialization.
 
 ## Architecture
 
@@ -48,7 +47,7 @@ npx wrangler deploy
 |:------|:------:|:----:|:-------:|:--------|
 | `/` | GET | No | No | Inline in `main()` |
 | `/.well-known/x402-info` | GET | No | No | `handle_x402_info()` |
-| `/.well-known/auth` | POST | — | — | `process_auth()` (middleware) |
+| `/.well-known/auth` | POST | - | - | `process_auth()` (middleware) |
 | `/free` | POST | Yes | No | `handle_free()` |
 | `/paid` | POST | Yes | 10 sats | `handle_paid()` |
 
@@ -63,7 +62,7 @@ npx wrangler deploy
 
 1. Check `x-bsv-payment` header
 2. **No header** → `create_nonce()` → bind nonce→price in KV (5-min TTL) → return 402 with payment headers (version, satoshis-required, derivation-prefix)
-3. **Header present** → parse `BsvPayment` JSON → `verify_nonce()` → verify nonce exists in KV (single-use) → delete KV binding → `from_base64()` decode tx → `Transaction::from_beef()` extract txid → `WorkerStorageClient` internalize with sender label via storage.babbage.systems → return 200 with receipt
+3. **Header present** → parse `BsvPayment` JSON → `verify_nonce()` → verify nonce exists in KV → `from_base64()` decode tx → `verify_brc29_payment_verified()` with required CHAINTRACKS_URL and obtain txid → claim D1 nonce → `WorkerStorageClient` internalize with sender label via storage.babbage.systems → return 200 with receipt
 
 ### Key Constants
 
@@ -75,7 +74,7 @@ const PAID_ENDPOINT_PRICE: u64 = 10;             // Satoshis for /paid endpoint
 
 ## Adding New Endpoints
 
-1. Write handler fn — follow `handle_free` (no payment) or `handle_paid` (with payment)
+1. Write handler fn - follow `handle_free` (no payment) or `handle_paid` (with payment)
 2. Add match arm in `main()` routing section
 3. Add entry in `handle_x402_info()` manifest
 4. Set price via constant at top of file
@@ -100,17 +99,28 @@ curl http://localhost:8787/
 
 ## Configuration
 
-- **SERVER_PRIVATE_KEY** — 64-char hex private key. Set in `.dev.vars` (local) or `npx wrangler secret put` (production).
-- **AUTH_SESSIONS** — KV namespace binding for session storage. Create with `npx wrangler kv namespace create AUTH_SESSIONS`.
-- **account_id** — Your Cloudflare account ID in `wrangler.toml`.
-- **CHAINTRACKS_URL** — `[vars]` in `wrangler.toml`; your block-header (ChainTracks) service. Placeholder `https://chaintracks.invalid` until you set it.
-- **CHAINTRACKS_URL** — `[vars]` in `wrangler.toml`; your block-header (ChainTracks) service. Placeholder `https://chaintracks.invalid` until you set it.
+- **SERVER_PRIVATE_KEY** - 64-char hex private key. Set in `.dev.vars` (local) or `npx wrangler secret put` (production).
+- **AUTH_SESSIONS** - KV namespace binding for session storage. Create with `npx wrangler kv namespace create AUTH_SESSIONS`.
+- **account_id** - Your Cloudflare account ID in `wrangler.toml`.
+- **CHAINTRACKS_URL** - `[vars]` in `wrangler.toml`; your block-header (ChainTracks) service. Placeholder `https://chaintracks.invalid` until you set it.
 
 ## Critical Notes
 
-- Until `bsv-middleware-cloudflare` 0.3.6 is on crates.io, `Cargo.toml` path-depends on `../wt-middleware-lane/.claude/worktrees/mw-port` (the `# TEMP` line); the M5 #36 sweep flips it to `version = "0.3.6"`.
-- **CHAINTRACKS_URL** (`wrangler.toml` `[vars]`) ships as the placeholder `https://chaintracks.invalid`; adopters set their own header service. Under the `.invalid` host the middleware's `verify_brc29_payment` skips SPV, so any handler that calls it must read the var and pass `Some(url)`.
 - Payment internalization goes through `storage.babbage.systems` (mainnet). Test payments spend real sats.
-- The nonce originator (`ORIGINATOR`) must match between `create_nonce` and `verify_nonce` — changing it after issuing 402s will break in-flight payments.
+- The nonce originator (`ORIGINATOR`) must match between `create_nonce` and `verify_nonce` - changing it after issuing 402s will break in-flight payments.
 - `.dev.vars` is gitignored. Only `.dev.vars.example` is committed. Never commit real keys.
-- The KV id in `wrangler.toml` is a placeholder — must be replaced before `wrangler dev` will work with KV persistence.
+- The KV id in `wrangler.toml` is a placeholder - must be replaced before `wrangler dev` will work with KV persistence.
+
+Payment verification uses bsv-middleware-cloudflare 0.5.1, bsv-rs 0.4.5 and worker 0.8.
+CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
+Verification runs before the D1 nonce claim. Storage failures release the claim and keep the quote.
+Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
+
+| Refusal | Signed status/code | Quote |
+| --- | --- | --- |
+| KeyDerivation, NoHeaderService, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
+| Server-side Unverifiable | 503 ERR_HEADER_SERVICE_UNAVAILABLE | Kept; retry same payment |
+| Payer-side Unverifiable, wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
+
+The CLAIMS D1 binding requires your own database and the middleware payment_claims schema.
+All account, namespace, database and key configuration in this template is placeholders only.

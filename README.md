@@ -23,11 +23,11 @@
 
 This template gives you a working Cloudflare Worker that:
 
-1. **Authenticates every request** using [BRC-31](https://github.com/bitcoin-sv/BRCs/blob/master/peer-to-peer/0031.md) mutual authentication — both client and server prove their identity with cryptographic signatures on every message.
+1. **Authenticates every request** using [BRC-31](https://github.com/bitcoin-sv/BRCs/blob/master/peer-to-peer/0031.md) mutual authentication - both client and server prove their identity with cryptographic signatures on every message.
 
-2. **Accepts micropayments** using [BRC-29](https://github.com/bitcoin-sv/BRCs/blob/master/peer-to-peer/0029.md) — paid endpoints return HTTP 402 with a payment request, the client creates a BSV transaction, and retries with payment. The server verifies and internalizes the funds automatically.
+2. **Accepts micropayments** using [BRC-29](https://github.com/bitcoin-sv/BRCs/blob/master/peer-to-peer/0029.md) - paid endpoints return HTTP 402 with a payment request, the client creates a BSV transaction, and retries with payment. The server verifies and internalizes the funds automatically.
 
-3. **Refunds on failure** using BRC-29 — if your service fails after accepting payment, the middleware issues an automatic refund transaction back to the client's wallet.
+3. **Refunds on failure** using BRC-29 - if your service fails after accepting payment, the middleware issues an automatic refund transaction back to the client's wallet.
 
 Fork it. Replace the hello-world logic with your service. Deploy. You now have a paid API.
 
@@ -43,14 +43,13 @@ npm install
 
 # 2. Configure
 cp .dev.vars.example .dev.vars
-# Edit .dev.vars — set a 64-char hex private key (or generate one)
+# Edit .dev.vars - set a 64-char hex private key (or generate one)
 
 # 3. Run
 npm run dev
 # Server is live at http://localhost:8787
 ```
 
-> **Note:** Dependencies are public crates: [`bsv-middleware-cloudflare`](https://crates.io/crates/bsv-middleware-cloudflare) and [`bsv-rs`](https://crates.io/crates/bsv-rs) (imported as `bsv_sdk`). Until `bsv-middleware-cloudflare` 0.3.6 is on crates.io, `Cargo.toml` points at a local checkout (the `# TEMP` line); it becomes `version = "0.3.6"` once published.
 >
 > **Set `CHAINTRACKS_URL`** in `wrangler.toml` `[vars]` to your own block-header (ChainTracks) service before you deploy. The shipped value, `https://chaintracks.invalid`, is a placeholder.
 
@@ -60,10 +59,10 @@ npm run dev
 
 | Route | Method | Auth | Payment | What it does |
 |:------|:------:|:----:|:-------:|:-------------|
-| `/` | `GET` | — | — | Health check. Returns `{"status": "ok"}` |
-| `/.well-known/x402-info` | `GET` | — | — | API discovery manifest (endpoints, pricing, server identity) |
-| `/.well-known/auth` | `POST` | — | — | BRC-31 handshake (handled automatically by middleware) |
-| `/free` | `POST` | Yes | — | Returns a greeting with the caller's identity key |
+| `/` | `GET` | - | - | Health check. Returns `{"status": "ok"}` |
+| `/.well-known/x402-info` | `GET` | - | - | API discovery manifest (endpoints, pricing, server identity) |
+| `/.well-known/auth` | `POST` | - | - | BRC-31 handshake (handled automatically by middleware) |
+| `/free` | `POST` | Yes | - | Returns a greeting with the caller's identity key |
 | `/paid` | `POST` | Yes | 10 sats | Returns a confirmation message + payment receipt |
 
 ---
@@ -138,7 +137,7 @@ const PRICE_PREMIUM: u64 = 1000;
 
 ### 2. Write a handler
 
-**Auth only** (no payment) — copy `handle_free`:
+**Auth only** (no payment) - copy `handle_free`:
 
 ```rust
 fn handle_my_endpoint(
@@ -154,9 +153,9 @@ fn handle_my_endpoint(
 }
 ```
 
-**Auth + payment** — copy `handle_paid` and put your business logic in the "Payment accepted!" section (search for that comment in `src/lib.rs`).
+**Auth + payment** - copy `handle_paid` and put your business logic in the "Payment accepted!" section (search for that comment in `src/lib.rs`).
 
-**Auth + payment + refund** — wrap your business logic in a match block. If it fails, call `issue_refund()` to return the funds automatically. See the refund pattern comments in `handle_paid` for the full example.
+**Auth + payment + refund** - wrap your business logic in a match block. If it fails, call `issue_refund()` to return the funds automatically. See the refund pattern comments in `handle_paid` for the full example.
 
 ### 3. Add a route
 
@@ -213,8 +212,8 @@ bsv-agent-template/
 
 | Crate | Source | Purpose |
 |:------|:------:|:--------|
-| `bsv-middleware-cloudflare` | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
-| `bsv-sdk` (package `bsv-rs` 0.3) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
+| `bsv-middleware-cloudflare` 0.5.1 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-sdk` (package `bsv-rs` 0.4.5) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
 | `worker` 0.8 | crates.io | Cloudflare Workers runtime |
 | `serde` / `serde_json` | crates.io | JSON serialization |
 
@@ -244,7 +243,7 @@ Your agent is now live at `https://bsv-agent-template.<your-subdomain>.workers.d
 
 ## See It in Action
 
-[x402agency.com](https://x402agency.com) runs real agents built from this template — AI image generation, video generation, speech-to-text, and more. Try any agent with the `/x402` skill in [Claude Code](https://claude.com/claude-code):
+[x402agency.com](https://x402agency.com) runs real agents built from this template - AI image generation, video generation, speech-to-text, and more. Try any agent with the `/x402` skill in [Claude Code](https://claude.com/claude-code):
 
 ```
 /x402 https://nano-banana-pro.x402agency.com
@@ -256,12 +255,30 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 
 ## Related Projects
 
-- **[x402-client](https://github.com/Calgooon/x402)** — Python client library for BRC-31 auth + BRC-29 payment. Use this to test your agent.
-- **[bsv-middleware-cloudflare](https://crates.io/crates/bsv-middleware-cloudflare)** — The Rust middleware that powers authentication and payment verification.
-- **[x402agency.com](https://x402agency.com)** — Live agents built from this template: image generation, video generation, speech-to-text, X research.
+- **[x402-client](https://github.com/Calgooon/x402)** - Python client library for BRC-31 auth + BRC-29 payment. Use this to test your agent.
+- **[bsv-middleware-cloudflare](https://crates.io/crates/bsv-middleware-cloudflare)** - The Rust middleware that powers authentication and payment verification.
+- **[x402agency.com](https://x402agency.com)** - Live agents built from this template: image generation, video generation, speech-to-text, X research.
 
 ---
 
 ## License
 
 MIT
+
+Payment verification uses bsv-middleware-cloudflare 0.5.1, bsv-rs 0.4.5 and worker 0.8.
+CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
+Verification runs before the D1 nonce claim. Storage failures release the claim and keep the quote.
+Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
+
+| Refusal | Signed status/code | Quote |
+| --- | --- | --- |
+| KeyDerivation, NoHeaderService, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
+| Server-side Unverifiable | 503 ERR_HEADER_SERVICE_UNAVAILABLE | Kept; retry same payment |
+| Payer-side Unverifiable, wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
+
+The CLAIMS D1 binding requires your own database and the middleware payment_claims schema.
+All account, namespace, database and key configuration in this template is placeholders only.
+
+Cargo.lock contains public crates.io SHA-256 checksums only. These documented 64-hex integrity values are not identities or secrets. Nonce tests construct example scalars 1 and 2 in memory.
+
+After replacing the D1 placeholders, apply the included schema with `npx wrangler d1 migrations apply CLAIMS --remote`. The adapter rejects a message whose identity is not the session identity with HTTP 401 ERR_INVALID_AUTH before routing.
