@@ -276,7 +276,7 @@ Only accepted payments consume the quote. No second BEEF parse is needed for the
 | --- | --- | --- |
 | KeyDerivation, NoHeaderService, BadWorkLimit, Source | 500 ERR_SERVER_MISCONFIGURED | Kept |
 | Server-side Unverifiable | 503 ERR_HEADER_SERVICE_UNAVAILABLE | Kept; retry same payment |
-| Payer-side Unverifiable, wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
+| Payer-side Unverifiable (including non-canonical varint), wrong script, underpayment, root mismatch | 400 ERR_PAYMENT_INVALID, reason Display | Kept; correct payment |
 
 The CLAIMS D1 binding requires your own database and the middleware payment_claims schema.
 All account, namespace, database and key configuration in this template is placeholders only.
@@ -288,7 +288,7 @@ After replacing the D1 placeholders, apply the included schema with `npx wrangle
 Every response built by a handler after verified payment, including success, refusal and generic error responses, is signed with `sign_json_response`. Following the fleet rule, a storage failure after internalize attempts a full inline refund of the actual verified amount before returning the signed error. The D1 nonce claim stays held so the accepted payment cannot be replayed, even if KV quote deletion fails. The error includes the refund remittance on success; if refund issuance fails, it reports `ERR_STORAGE_FAILED_REFUND_FAILED` and the owed amount for operator recovery. This minimal template does not journal deferred refunds. Work and memory declines remain payer-side `Unverifiable`, returned as 400 `ERR_PAYMENT_INVALID` with the reason named.
 
 The paid handler splits authenticated multipart bodies with `split_multipart_payment` and verifies through `verify_brc29_payment_source`. Multipart BEEF is decoded in chunks; internalization uses `PaymentPart::encoded_transaction()`.
-`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the new bsv-rs 0.5.0 invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
+`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the bsv-rs 0.6.0 non-canonical varint, invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
 `GET /health` (also `/`) returns `status`, `service`, and `build` with `lib_rev`, tracked-file `dirty`, hourly UTC `built_at`, and the three crate versions from Cargo.lock, using bsv-worker-build-info 0.1.0. Build metadata needs no credentials. The Wrangler build command sets `BUILD_HOUR=$(date -u +%Y-%m-%dT%H)` so Cargo refreshes `built_at` each UTC hour; direct cached builds without `BUILD_HOUR` can retain an older timestamp.
 After a refunded storage failure, the D1 claim remains held: request a fresh 402 quote before paying again.
 
