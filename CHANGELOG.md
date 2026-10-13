@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 line - 2026-10-13
+
+- Move to adapter 0.6.2, core 0.3.2 and one bsv-rs 0.6.0; keep other locked dependencies unchanged.
+- Reject a non-canonical varint in a BEEF at payment verification, before the nonce claim and internalization. Return payer-side 400 ERR_PAYMENT_INVALID naming the reason; keep the quote for a corrected payment.
+- Declare the Rust 1.88 floor required by bsv-rs 0.6.0 and published by both the adapter and core.
+
 ## 0.6.1 line - 2026-10-12
 
 - Move to adapter 0.6.1, core 0.3.1 and one bsv-rs 0.5.0; keep other locked dependencies unchanged.

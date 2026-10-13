@@ -217,9 +217,9 @@ bsv-agent-template/
 
 | Crate | Source | Purpose |
 |:------|:------:|:--------|
-| `bsv-middleware-cloudflare` 0.6.1 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
-| `bsv-middleware-core` 0.3.1 | crates.io | Payment verification core (transitive dependency) |
-| `bsv-sdk` (package `bsv-rs` 0.5.0) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
+| `bsv-middleware-cloudflare` 0.6.2 | crates.io | BRC-31 auth middleware, CORS, response signing, storage client |
+| `bsv-middleware-core` 0.3.2 | crates.io | Payment verification core (transitive dependency) |
+| `bsv-sdk` (package `bsv-rs` 0.6.0) | crates.io | Key derivation, nonce creation/verification, transaction parsing |
 | `worker` 0.8 | crates.io | Cloudflare Workers runtime |
 | `serde` / `serde_json` | crates.io | JSON serialization |
 
@@ -267,7 +267,7 @@ The skill discovers endpoints, authenticates, negotiates payment, and handles th
 
 ---
 
-Payment verification uses bsv-middleware-cloudflare 0.6.1, bsv-middleware-core 0.3.1, bsv-rs 0.5.0 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.6.2, bsv-middleware-core 0.3.2, bsv-rs 0.6.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
