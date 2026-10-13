@@ -36,7 +36,7 @@ npx wrangler deploy
 
 ## Dependencies
 
-- **bsv-sdk** (crates.io `bsv-rs` 0.5.0, `package = "bsv-rs"`) - BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `VerifiedPayment`.
+- **bsv-sdk** (crates.io `bsv-rs` 0.6.0, `package = "bsv-rs"`) - BSV primitives: `PrivateKey`, `ProtoWallet`, `create_nonce`/`verify_nonce`, `from_base64`, `VerifiedPayment`.
 - **worker** 0.8 (crates.io) - Cloudflare Workers Rust runtime. Build with the global `worker-build` 0.8.x.
 - **serde** / **serde_json** (crates.io) - JSON serialization.
 
@@ -112,7 +112,7 @@ curl http://localhost:8787/health
 - `.dev.vars` is gitignored. Only `.dev.vars.example` is committed. Never commit real keys.
 - The KV id in `wrangler.toml` is a placeholder - must be replaced before `wrangler dev` will work with KV persistence.
 
-Payment verification uses bsv-middleware-cloudflare 0.6.1, bsv-rs 0.5.0 and worker 0.8.
+Payment verification uses bsv-middleware-cloudflare 0.6.2, bsv-rs 0.6.0 and worker 0.8.
 CHAINTRACKS_URL is required. The shipped .invalid URL is a placeholder and fails closed.
 Verification runs before the D1 nonce claim. Failures before internalization release the claim and keep the quote. After internalization, a KV failure refunds inline before the signed error and keeps the D1 claim held.
 Only accepted payments consume the quote. No second BEEF parse is needed for the receipt txid.
@@ -127,6 +127,6 @@ The CLAIMS D1 binding requires your own database and the middleware payment_clai
 All account, namespace, database and key configuration in this template is placeholders only.
 
 The paid handler splits authenticated multipart bodies with `split_multipart_payment` and verifies through `verify_brc29_payment_source`. Multipart BEEF is decoded in chunks; internalization uses `PaymentPart::encoded_transaction()`.
-`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the new bsv-rs 0.5.0 invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
+`PAYMENT_WORK_LIMIT` selects script work units per input (example: `1000000`); unset or blank means no bound. Zero or malformed values return signed 500 `ERR_SERVER_MISCONFIGURED`. Work declines and the bsv-rs 0.6.0 non-canonical varint, invalid-byte and spend refusals remain payer-side 400; missing mining context is server-side 503.
 `GET /health` (also `/`) returns `status`, `service`, and `build` with `lib_rev`, tracked-file `dirty`, hourly UTC `built_at`, and the three crate versions from Cargo.lock, using bsv-worker-build-info 0.1.0. Build metadata needs no credentials. The Wrangler build command sets `BUILD_HOUR=$(date -u +%Y-%m-%dT%H)` so Cargo refreshes `built_at` each UTC hour; direct cached builds without `BUILD_HOUR` can retain an older timestamp.
 After a refunded storage failure, the D1 claim remains held: request a fresh 402 quote before paying again.
